@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: netwerk-chat-app
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /health
+    disk:
+      name: netwerk-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: NETWERK_DATABASE_PATH
+        value: /var/data/netwerk.db
+      - key: NETWERK_JSON_DIR
+        value: /var/data/json
+      - key: SERVICE
+        sync: false
+      - key: APP_PASSWORD
+        sync: false

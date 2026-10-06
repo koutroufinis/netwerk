@@ -18,16 +18,20 @@ from email.message import EmailMessage
 
 from flask import Flask, jsonify, make_response, redirect, request, send_file, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, "database", ".env")
+IS_RENDER = os.environ.get("RENDER", "").lower() == "true"
+DEFAULT_DATA_DIR = "/var/data" if IS_RENDER else os.path.join(BASE_DIR, "database")
 DATABASE_PATH = os.environ.get(
     "NETWERK_DATABASE_PATH",
-    os.path.join(BASE_DIR, "database", "sql", "netwerk.db")
+    os.path.join(DEFAULT_DATA_DIR, "netwerk.db") if IS_RENDER
+    else os.path.join(DEFAULT_DATA_DIR, "sql", "netwerk.db")
 )
 JSON_DATA_DIR = os.environ.get(
     "NETWERK_JSON_DIR",
-    os.path.join(BASE_DIR, "database", "json")
+    os.path.join(DEFAULT_DATA_DIR, "json")
 )
 BAN_LIST_PATH = os.path.join(JSON_DATA_DIR, "banned.json")
 JSON_SYNC_LOCK = threading.Lock()
@@ -55,8 +59,24 @@ def load_mail_environment():
 load_mail_environment()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
+secret_key = os.environ.get("FLASK_SECRET_KEY")
+if IS_RENDER and not secret_key:
+    raise RuntimeError(
+        "FLASK_SECRET_KEY must be configured in Render before starting the app."
+    )
+app.secret_key = secret_key or secrets.token_hex(32)
 app.permanent_session_lifetime = timedelta(days=30)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(
+        os.environ.get(
+            "SESSION_COOKIE_SECURE",
+            "true" if IS_RENDER else "false"
+        ).lower() == "true"
+    )
+)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 @contextmanager
@@ -410,7 +430,13 @@ if not os.path.exists(BAN_LIST_PATH):
 
 @app.before_request
 def enforce_bans():
-    if request.endpoint in {"banned", "ban_status", "logout", "delete_account"}:
+    if request.endpoint in {
+        "banned",
+        "ban_status",
+        "logout",
+        "delete_account",
+        "health_check"
+    }:
         return None
 
     if request.path in {
@@ -439,6 +465,13 @@ def enforce_bans():
 @app.route("/")
 def index():
     return send_from_directory(BASE_DIR, "index.html")
+
+
+@app.route("/health")
+def health_check():
+    with connect_database() as connection:
+        connection.execute("SELECT 1")
+    return jsonify({"success": True})
 
 
 @app.route("/verification")
@@ -1590,6 +1623,6 @@ def resources(filename):
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=5000,
+        port=int(os.environ.get("PORT", "5000")),
         debug=False
     )
